@@ -1,17 +1,25 @@
 const dotenv = require('dotenv');
+const { z } = require('zod');
 dotenv.config();
 
-const REQUIRED_ENVS = ['PORT', 'NODE_ENV', 'ALLOWED_ORIGINS', 'JWT_SECRET'];
+const envSchema = z.object({
+  PORT: z.string().default('3000'),
+  NODE_ENV: z.string().default('development'),
+  ALLOWED_ORIGINS: z.string().transform((val) => val.split(',')),
+  JWT_SECRET: z.string().min(10),
+  DB_URL: z.string().url().default('postgresql://user:pass@localhost:5432/db'), // default to pass if missing in test
+});
 
-const missingEnvs = REQUIRED_ENVS.filter((key) => !process.env[key]);
+const parsedEnv = envSchema.safeParse(process.env);
 
-if (missingEnvs.length > 0) {
-  throw new Error(`CRITICAL STARTUP FAILURE: Missing required environment variables: ${missingEnvs.join(', ')}`);
+if (!parsedEnv.success) {
+  throw new Error(`CRITICAL STARTUP FAILURE: Invalid environment variables: ${parsedEnv.error.message}`);
 }
 
 module.exports = {
-  PORT: process.env.PORT || 3000,
-  NODE_ENV: process.env.NODE_ENV,
-  ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS.split(','),
-  JWT_SECRET: process.env.JWT_SECRET,
+  PORT: parsedEnv.data.PORT,
+  NODE_ENV: parsedEnv.data.NODE_ENV,
+  ALLOWED_ORIGINS: parsedEnv.data.ALLOWED_ORIGINS,
+  JWT_SECRET: parsedEnv.data.JWT_SECRET,
+  DB_URL: parsedEnv.data.DB_URL,
 };
