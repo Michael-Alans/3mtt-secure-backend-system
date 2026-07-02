@@ -1,6 +1,46 @@
 # 3MTT Secure Backend System
 
-A production-hardened Express.js backend implementing a **layered defense-in-depth** security architecture. This project demonstrates how to protect a Node.js API against common web vulnerabilities using industry-standard middleware and practices.
+A production-hardened Express.js backend implementing a **layered defense-in-depth** security architecture. This project demonstrates how to protect a Node.js API against common web vulnerabilities using industry-standard middleware and practices, with full **JWT authentication**, **MongoDB persistence**, **Redis caching**, and **paginated APIs**.
+
+---
+
+## Architecture Overview
+
+```
+Client Request
+    │
+    ▼
+┌──────────┐   ┌──────────┐   ┌────────────┐   ┌─────────────┐   ┌────────────┐
+│  Helmet   │──▶│   CORS   │──▶│ Rate Limit │──▶│  Zod Valid. │──▶│ Auth (JWT) │
+│ (Headers) │   │ (Origins)│   │ (Throttle) │   │  (Schemas)  │   │  (Verify)  │
+└──────────┘   └──────────┘   └────────────┘   └─────────────┘   └────────────┘
+                                                                        │
+                                                                        ▼
+                                                               ┌────────────────┐
+                                                               │  Controllers   │
+                                                               │ (Auth / Items) │
+                                                               └────────────────┘
+                                                                  │          │
+                                                            ┌─────┘          └─────┐
+                                                            ▼                      ▼
+                                                     ┌───────────┐          ┌───────────┐
+                                                     │  MongoDB   │          │   Redis   │
+                                                     │ (Mongoose) │          │ (ioredis) │
+                                                     └───────────┘          └───────────┘
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description | Example |
+|---|---|---|---|
+| `PORT` | No | Server port (default: `3000`) | `3000` |
+| `NODE_ENV` | No | Environment mode (default: `development`) | `production` |
+| `JWT_SECRET` | **Yes** | Secret key for signing/verifying JWTs (min 10 chars) | `my_super_secret_key_123` |
+| `MONGO_URI` | No | MongoDB connection string (default: `mongodb://localhost:27017/secure-backend`) | `mongodb://localhost:27017/mydb` |
+| `REDIS_URL` | No | Redis connection string (default: `redis://localhost:6379`) | `redis://localhost:6379` |
+| `ALLOWED_ORIGINS` | **Yes** | Comma-separated list of allowed CORS origins | `http://localhost:3000,https://myapp.com` |
 
 ---
 
@@ -44,7 +84,7 @@ This section documents the specific threats this system mitigates, the tools cho
 
 **Threat:** An attacker sends unexpected data types, excessively long strings, or SQL/NoSQL injection payloads through API request bodies.
 
-**Mitigation:** Every route that accepts input (`POST /api/login`, `POST /api/register`) has a **Zod schema** applied as middleware *before* the controller. The schema enforces strict type checking (e.g., valid email format, minimum password length). Invalid requests are rejected with a `400` status and **field-level error details**, preventing any malformed data from reaching business logic.
+**Mitigation:** Every route that accepts input (`POST /api/login`, `POST /api/register`, `POST /api/items`) has a **Zod schema** applied as middleware *before* the controller. The schema enforces strict type checking (e.g., valid email format, minimum password length). Invalid requests are rejected with a `400` status and **field-level error details**, preventing any malformed data from reaching business logic.
 
 ### 7. Cross-Site Request Forgery (CSRF) → **CORS Configuration**
 
@@ -52,13 +92,15 @@ This section documents the specific threats this system mitigates, the tools cho
 
 **Mitigation:** CORS is configured with an **explicit origin allowlist** read from the `ALLOWED_ORIGINS` environment variable (not a wildcard `*`). Only approved domains can make cross-origin requests. Allowed methods are restricted to `GET, POST, PUT, DELETE`, and allowed headers to `Content-Type` and `Authorization`.
 
-### 8. Unauthorized Access → **Authentication (JWT) & RBAC**
+### 8. Unauthorized Access → **JWT Authentication & RBAC**
 
 **Threat:** Unauthenticated users access protected resources, or regular users escalate privileges to access admin-only functionality.
 
 **Mitigation:**
-- **Authentication middleware** checks for a valid `Bearer` token in the `Authorization` header, returning `401 Unauthorized` if missing or invalid.
-- **RBAC middleware** (`authorizeAdmin`) checks the authenticated user's role, returning `403 Forbidden` if the user lacks admin privileges. This prevents both horizontal and vertical privilege escalation.
+- **Registration** hashes passwords using `bcryptjs` with 12 salt rounds before storing in MongoDB.
+- **Login** verifies credentials using `bcrypt.compare()` and issues a signed JWT via `jsonwebtoken.sign()`.
+- **Authentication middleware** verifies the Bearer token using `jsonwebtoken.verify()` with the `JWT_SECRET`, attaching the decoded payload `{ id, role }` to `req.user`.
+- **RBAC middleware** (`authorizeAdmin`) checks the authenticated user's role, returning `403 Forbidden` if the user lacks admin privileges.
 
 ### 9. Secret Leakage → **Environment Variable Management**
 
@@ -66,20 +108,17 @@ This section documents the specific threats this system mitigates, the tools cho
 
 **Mitigation:**
 - All secrets are loaded via `process.env` using `dotenv`.
-- A **Zod schema** validates that all required environment variables (`JWT_SECRET`, `DB_URL`, `ALLOWED_ORIGINS`) are present and correctly formatted at startup. The application **throws a critical error and refuses to start** if any are missing.
+- A **Zod schema** validates that all required environment variables (`JWT_SECRET`, `MONGO_URI`, `REDIS_URL`, `ALLOWED_ORIGINS`) are present and correctly formatted at startup. The application **throws a critical error and refuses to start** if any are missing.
 - `.env` is in `.gitignore`; `.env.example` provides safe placeholder values.
 
----
+### 10. Stale Data & Performance → **Redis Caching**
 
-## Acknowledged Limitations
+**Threat:** Repeated database queries for frequently accessed data cause unnecessary load and latency.
 
-> **These are known gaps that would need to be addressed before a production deployment:**
-
-1. **No real JWT verification** — The current `authenticate` middleware uses hardcoded token strings for demonstration. In production, `jsonwebtoken.verify(token, env.JWT_SECRET)` should be used.
-2. **No database encryption at rest** — The system does not currently implement database-level encryption (e.g., TDE or column-level encryption).
-3. **No HTTPS enforcement at the application level** — HSTS headers are set, but the server itself does not terminate TLS. A reverse proxy (e.g., Nginx, Cloudflare) is assumed for TLS termination.
-4. **No request logging or audit trail** — There is no centralized logging (e.g., Winston, Pino) for security events like failed logins or rate-limit triggers.
-5. **No CSRF tokens** — CORS alone does not fully prevent CSRF for cookie-based authentication. A dedicated CSRF token library (e.g., `csurf`) would be needed if cookies are used for auth.
+**Mitigation:**
+- **Read-through cache**: GET endpoints check Redis first; on miss, query MongoDB and store result with a 5-minute TTL.
+- **Cache invalidation**: POST, PUT, and DELETE operations automatically delete all related cache keys to prevent stale data.
+- **Consistent key strategy**: Cache keys follow the pattern `prefix:originalUrl` for deterministic lookups.
 
 ---
 
@@ -87,15 +126,25 @@ This section documents the specific threats this system mitigates, the tools cho
 
 ```
 ├── src/
-│   ├── app.js                 # Express application entry point
+│   ├── server.js              # Boot file: connects DB/Redis, starts Express
+│   ├── app.js                 # Express application (routes + middleware)
 │   ├── config/
-│   │   └── env.js             # Zod-validated environment configuration
-│   └── middleware/
-│       ├── auth.js            # Authentication (401) & RBAC (403) middleware
-│       ├── security.js        # Helmet, CORS, Rate Limiting configuration
-│       └── validate.js        # Zod validation middleware (400)
+│   │   ├── env.js             # Zod-validated environment configuration
+│   │   ├── db.js              # MongoDB/Mongoose connection
+│   │   └── redis.js           # Redis/ioredis client
+│   ├── controllers/
+│   │   ├── authController.js  # Register (bcrypt) & Login (JWT) logic
+│   │   └── itemController.js  # Paginated CRUD with Redis caching
+│   ├── middleware/
+│   │   ├── auth.js            # JWT verification (401) & RBAC (403)
+│   │   ├── cache.js           # Redis read-through cache middleware
+│   │   ├── security.js        # Helmet, CORS, Rate Limiting
+│   │   └── validate.js        # Zod validation middleware (400)
+│   └── models/
+│       ├── User.js            # Mongoose schema with bcrypt pre-save hook
+│       └── Item.js            # Mongoose schema with pagination indexes
 ├── tests/
-│   └── security.test.js       # Integration tests for 400, 401, 403, 429
+│   └── security.test.js       # Integration tests (auth, CRUD, pagination, RBAC, rate limiting)
 ├── .env.example               # Safe placeholder environment variables
 ├── .gitignore                 # Excludes node_modules, .env, .DS_Store
 ├── SECURITY.md                # Additional security documentation
@@ -107,19 +156,38 @@ This section documents the specific threats this system mitigates, the tools cho
 
 ## Getting Started
 
+### Prerequisites
+
+- **Node.js** v18+
+- **MongoDB** (local or Atlas cloud instance)
+- **Redis** (local or cloud instance)
+
+### Setup
+
 ```bash
 # Install dependencies
 pnpm install
 
-# Copy environment config
-cp .env.example .env
+# Copy environment config and edit with your values
+cp src/.env.example .env
 
-# Run the server
-node src/app.js
+# Start the server (connects to MongoDB and Redis)
+pnpm start
 
-# Run security tests
+# Run integration tests (uses in-memory MongoDB, no external services needed)
 pnpm test
 
 # Run a security audit
 pnpm audit
 ```
+
+### API Endpoints
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/register` | ❌ | Register a new user (bcrypt hashed) |
+| `POST` | `/api/login` | ❌ | Login and receive a JWT |
+| `GET` | `/api/items?page=1&limit=10` | ✅ | List items (paginated, cached) |
+| `POST` | `/api/items` | ✅ | Create a new item |
+| `DELETE` | `/api/items/:id` | ✅ | Delete an item |
+| `GET` | `/api/admin` | ✅ Admin | Admin-only dashboard |

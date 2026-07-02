@@ -1,9 +1,10 @@
+const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 
 // ─── Authentication Middleware ───────────────────────────────────────────────
-// Verifies that a valid Bearer token is present in the Authorization header.
-// In a production system, this would verify a JWT using env.JWT_SECRET.
-// Returns 401 Unauthorized if no token is provided or the token is invalid.
+// Verifies the Bearer token using jsonwebtoken.verify() with the JWT_SECRET.
+// Attaches the decoded payload { id, role } to req.user.
+// Returns 401 Unauthorized if no token is provided or verification fails.
 const authenticate = (req, res, next) => {
   const authHeader = req.headers.authorization;
 
@@ -16,20 +17,17 @@ const authenticate = (req, res, next) => {
 
   const token = authHeader.split(' ')[1];
 
-  // Simplified token validation for demonstration.
-  // In production, use jsonwebtoken.verify(token, env.JWT_SECRET).
-  if (token === 'valid-admin-token') {
-    req.user = { role: 'admin' };
-  } else if (token === 'valid-user-token') {
-    req.user = { role: 'user' };
-  } else {
+  try {
+    // Verify token signature and expiration using the secret from env
+    const decoded = jwt.verify(token, env.JWT_SECRET);
+    req.user = { id: decoded.id, role: decoded.role };
+    next();
+  } catch (error) {
     return res.status(401).json({
       status: 'fail',
       error: 'Unauthorized. Token is invalid or expired.',
     });
   }
-
-  next();
 };
 
 // ─── Role-Based Access Control (RBAC) Middleware ─────────────────────────────

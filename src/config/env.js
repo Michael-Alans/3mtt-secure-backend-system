@@ -7,7 +7,8 @@ const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   ALLOWED_ORIGINS: z.string().transform((val) => val.split(',')),
   JWT_SECRET: z.string().min(10),
-  DB_URL: z.string().url().default('postgresql://user:pass@localhost:5432/db'), // default to pass if missing in test
+  MONGO_URI: z.string().default('mongodb://localhost:27017/secure-backend'),
+  REDIS_URL: z.string().default('redis://localhost:6379'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -21,5 +22,6 @@ module.exports = {
   NODE_ENV: parsedEnv.data.NODE_ENV,
   ALLOWED_ORIGINS: parsedEnv.data.ALLOWED_ORIGINS,
   JWT_SECRET: parsedEnv.data.JWT_SECRET,
-  DB_URL: parsedEnv.data.DB_URL,
+  MONGO_URI: parsedEnv.data.MONGO_URI,
+  REDIS_URL: parsedEnv.data.REDIS_URL,
 };

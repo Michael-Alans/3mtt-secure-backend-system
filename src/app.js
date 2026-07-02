@@ -3,6 +3,8 @@ const { z } = require('zod');
 const { helmetMiddleware, corsMiddleware, globalLimiter, strictAuthLimiter } = require('./middleware/security');
 const { validateJson } = require('./middleware/validate');
 const { authenticate, authorizeAdmin } = require('./middleware/auth');
+const { register, login } = require('./controllers/authController');
+const { getItems, createItem, deleteItem } = require('./controllers/itemController');
 
 const app = express();
 
@@ -24,18 +26,28 @@ const registerSchema = z.object({
   password: z.string().min(8, 'password must be at least 8 characters'),
 });
 
-// ─── Public Routes ───────────────────────────────────────────────────────────
-// POST /api/login — Strict rate limiting + Zod validation
-app.post('/api/login', strictAuthLimiter, validateJson(loginSchema), (req, res) => {
-  res.status(200).json({ status: 'success', message: 'Authenticated.' });
+const itemSchema = z.object({
+  title: z.string().min(1, 'title is required').max(200, 'title must be at most 200 characters'),
+  description: z.string().max(2000, 'description must be at most 2000 characters').optional(),
 });
 
-// POST /api/register — Strict rate limiting + Zod validation
-app.post('/api/register', strictAuthLimiter, validateJson(registerSchema), (req, res) => {
-  res.status(201).json({ status: 'success', message: 'User registered.' });
-});
+// ─── Public Routes ───────────────────────────────────────────────────────────
+// POST /api/register — Strict rate limiting + Zod validation + bcrypt hashing
+app.post('/api/register', strictAuthLimiter, validateJson(registerSchema), register);
+
+// POST /api/login — Strict rate limiting + Zod validation + bcrypt compare + JWT sign
+app.post('/api/login', strictAuthLimiter, validateJson(loginSchema), login);
 
 // ─── Protected Routes ────────────────────────────────────────────────────────
+// GET /api/items — Authenticated + Paginated (with Redis cache in controller)
+app.get('/api/items', authenticate, getItems);
+
+// POST /api/items — Authenticated + Validated + Cache invalidation
+app.post('/api/items', authenticate, validateJson(itemSchema), createItem);
+
+// DELETE /api/items/:id — Authenticated + Cache invalidation
+app.delete('/api/items/:id', authenticate, deleteItem);
+
 // GET /api/admin — Requires valid token (401) AND admin role (403)
 app.get('/api/admin', authenticate, authorizeAdmin, (req, res) => {
   res.status(200).json({ status: 'success', data: { message: 'Admin dashboard data.' } });
